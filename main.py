@@ -277,7 +277,7 @@ if __name__ == '__main__':
                                       s, s + args.batch_size,
                                       n_negs)
 
-                batch_loss, train_loss, emb_loss, tau = model(batch, loss_per_user=loss_per_user, w_0=w_0, s=s)
+                batch_loss, train_loss, emb_loss, tau = model(batch, loss_per_user=loss_per_user, loss_per_ins=loss_per_ins, epoch=epoch, w_0=w_0, s=s)
                 tau_maxs.append(tau.max().item())
                 tau_mins.append(tau.min().item())
                 losses_emb.append(emb_loss.item())
@@ -294,7 +294,7 @@ if __name__ == '__main__':
                 batch = sample.get_feed_dict_reset(train_cf_,
                                       user_dict['train_user_set'],
                                       s, n_negs)
-                batch_loss, train_loss, emb_loss, tau = model(batch, loss_per_user=loss_per_user, w_0=w_0, s=s)
+                batch_loss, train_loss, emb_loss, tau = model(batch, loss_per_user=loss_per_user, loss_per_ins=loss_per_ins, epoch=epoch, w_0=w_0, s=s)
                 tau_maxs.append(tau.max().item())
                 tau_mins.append(tau.min().item())
                 losses_emb.append(emb_loss.item())
@@ -309,6 +309,7 @@ if __name__ == '__main__':
             
             losses_train = torch.cat(losses_train, dim=0)
             loss_per_user = scatter(losses_train, train_cf_[:, 0], dim=0, reduce='mean')
+            loss_per_ins = scatter(losses_train, train_cf_[:, 1], dim=0, reduce='mean')
             # valid
             model.eval()
             with torch.no_grad():
