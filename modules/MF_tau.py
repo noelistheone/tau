@@ -140,27 +140,98 @@ class MF(nn.Module):
         emb_ = emb + torch.sign(emb) * F.normalize(random_noise, dim=-1) * eps
         return emb_
     
-    def InfoNCE(self, view1, view2, temperature: float, b_cos: bool = True):
-        """
-        Args:
-            view1: (torch.Tensor - N x D)
-            view2: (torch.Tensor - N x D)
-            temperature: float
-            b_cos (bool)
+#     def InfoNCE(self, view1, view2, temperature: float, b_cos: bool = True):
+#         """
+#         Args:
+#             view1: (torch.Tensor - N x D)
+#             view2: (torch.Tensor - N x D)
+#             temperature: float
+#             b_cos (bool)
 
-        Return: Average InfoNCE Loss
+#         Return: Average InfoNCE Loss
+#         """
+#         if b_cos:
+#             view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
+
+#         pos_score = (view1 @ view2.T) / temperature
+#         score = torch.diag(F.log_softmax(pos_score, dim=1))
+#         return -score.mean()
+    def InfoNCE(self, u_e, pos_e, neg_e, temperature: float):
+        """
+        Compute the InfoNCE loss using anchor, positive, and negative embeddings.
+
+        Args:
+            u_e (torch.Tensor): Anchor embeddings, size [N, D]
+            pos_e (torch.Tensor): Positive embeddings corresponding to the anchors, size [N, D]
+            neg_e (torch.Tensor): Negative embeddings, size [N, M, D] where M is the number of negatives
+            temperature (float): Temperature scaling factor for controlling the sharpness of the distribution
+
+        Returns:
+            torch.Tensor: The average InfoNCE loss
+        """
+        # Normalize embeddings to ensure cosine similarity computation
+        u_e = F.normalize(u_e, dim=1)
+        pos_e = F.normalize(pos_e, dim=1)
+        neg_e = F.normalize(neg_e, dim=-1)
+
+        # Compute similarity scores
+        pos_scores = torch.sum(u_e * pos_e, dim=1, keepdim=True) / temperature
+        neg_scores = torch.einsum('nd,nmd->nm', u_e, neg_e) / temperature
+
+        # Concatenate the scores for positive and negative pairs
+        scores = torch.cat([pos_scores, neg_scores], dim=1)
+
+        # Compute log_softmax over the scores to get the log-probabilities
+        log_probs = F.log_softmax(scores, dim=1)
+
+        # Compute the negative log likelihood for the positive class (index 0)
+        loss = -log_probs[:, 0].mean()
+
+        return loss
+    
+    def InfoNCE_with_negatives(self, pos, pos_aug, neg, neg_aug, temperature: float, b_cos: bool = True):
+        """
+        Compute the InfoNCE loss considering both positive and negative samples along with their augmentations.
+
+        Args:
+            pos (torch.Tensor): Positive embeddings, size [N, D]
+            pos_aug (torch.Tensor): Augmented positive embeddings, size [N, D]
+            neg (torch.Tensor): Negative embeddings, size [N, M, D]
+            neg_aug (torch.Tensor): Augmented negative embeddings, size [N, M, D]
+            temperature (float): Temperature scaling factor
+            b_cos (bool): Boolean to use cosine similarity normalization
+
+        Returns:
+            torch.Tensor: The average InfoNCE loss
         """
         if b_cos:
-            view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
+            pos = F.normalize(pos, dim=1)
+            pos_aug = F.normalize(pos_aug, dim=1)
+            neg = F.normalize(neg, dim=-1)
+            neg_aug = F.normalize(neg_aug, dim=-1)
 
-        pos_score = (view1 @ view2.T) / temperature
-        score = torch.diag(F.log_softmax(pos_score, dim=1))
-        return -score.mean()
+        # Calculate scores for positive pairs
+        pos_scores = (pos * pos_aug).sum(dim=1, keepdim=True) / temperature
+
+        # Calculate scores for negative pairs against positive embeddings
+        neg_scores = torch.einsum('nd,nmd->nm', pos, neg) / temperature
+
+        # Calculate scores for augmented negative pairs against positive embeddings
+        neg_aug_scores = torch.einsum('nd,nmd->nm', pos, neg_aug) / temperature
+
+        # Combine scores and apply log-softmax
+        all_scores = torch.cat((pos_scores, neg_scores, neg_aug_scores), dim=1)
+        log_probs = F.log_softmax(all_scores, dim=1)
+
+        # Calculate the loss as the negative log likelihood of the positive examples
+        loss = -log_probs[:, 0].mean()  # Only select the log probabilities corresponding to the positive examples
+
+        return loss
     
-    def cal_cl_loss(self,user_view1,user_view2,item_view1,item_view2,temperature_u, temperature_i):
+    def cal_cl_loss(self,user_view1,user_view2,pos_view1,pos_view2,neg_view1, neg_view2,temperature_u, temperature_i):
         
         user_cl_loss = self.InfoNCE(user_view1, user_view2, temperature_u.unsqueeze(1))
-        item_cl_loss = self.InfoNCE(item_view1, item_view2, temperature_i.unsqueeze(1))
+        item_cl_loss = self.InfoNCE_with_negatives(pos_view1,pos_view2,neg_view1, neg_view2, temperature_i.unsqueeze(1))
         
         return (user_cl_loss + item_cl_loss)
     
@@ -171,13 +242,14 @@ class MF(nn.Module):
         
         cl_user_emb = self.add_noise(self.user_embed)
         cl_item_emb = self.add_noise(self.item_embed)
+        
 
         if s == 0 and w_0 is not None:
             tau_user = self._loss_to_tau(loss_per_user, w_0)
             tau_item = self._loss_to_tau(loss_per_ins, w_0)
             self._update_tau_memory(tau_user, tau_item)
          
-        return self.Uniform_loss(self.user_embed[user], self.item_embed[pos_item], self.item_embed[neg_item], cl_user_emb[user], cl_item_emb[pos_item], user, w_0)
+        return self.Uniform_loss(self.user_embed[user], self.item_embed[pos_item], self.item_embed[neg_item], cl_user_emb[user], cl_item_emb[pos_item],cl_item_emb[neg_item], user, w_0)
 
     def gcn_emb(self):
         user_gcn_emb, item_gcn_emb = self.user_embed, self.item_embed
@@ -201,7 +273,7 @@ class MF(nn.Module):
         return torch.matmul(u_g_embeddings, i_g_embeddings.t())
 
     # 对比训练loss，仅仅计算角度
-    def Uniform_loss(self, user_gcn_emb, pos_gcn_emb, neg_gcn_emb, cl_user_emb, cl_item_emb, user, w_0=None):
+    def Uniform_loss(self, user_gcn_emb, pos_gcn_emb, neg_gcn_emb, cl_user_emb, cl_pos_emb, cl_neg_emb,user, w_0=None):
         batch_size = user_gcn_emb.shape[0]
         u_e = user_gcn_emb  # [B, F]
         if self.mess_dropout:
@@ -213,8 +285,11 @@ class MF(nn.Module):
         if self.u_norm:
             u_e = F.normalize(u_e, dim=-1)
             
+            
         if self.i_norm:
             item_e = F.normalize(item_e, dim=-1)
+            
+            
 
         y_pred = torch.bmm(item_e, u_e.unsqueeze(-1)).squeeze(-1) # [B M+1]
         # cul regularizer
@@ -228,8 +303,8 @@ class MF(nn.Module):
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)
-            cl_loss = 0.2 * self.cal_cl_loss(u_e, cl_user_emb, pos_e, cl_item_emb, tau, tau_i)
-            return loss.mean() + emb_loss, loss_, emb_loss, tau
+            cl_loss = self.InfoNCE(u_e, pos_e, neg_e, tau.unsqueeze(1))
+            return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
         elif self.loss_name == "SSM_Loss":
             loss, loss_ = self.loss_fn(y_pred)
             return loss.mean() + emb_loss, loss_, emb_loss, y_pred
