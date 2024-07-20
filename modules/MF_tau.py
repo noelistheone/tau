@@ -135,59 +135,30 @@ class MF(nn.Module):
                 tau = (t_0 * torch.exp(-laberw_data)).detach()
         return tau
     
-    def add_noise(self, emb, eps=0.03):
+    
+    
+    def add_noise(self, emb, eps=0.1):
         random_noise = torch.rand_like(emb).cuda()
         emb_ = emb + torch.sign(emb) * F.normalize(random_noise, dim=-1) * eps
         return emb_
     
-#     def InfoNCE(self, view1, view2, temperature: float, b_cos: bool = True):
-#         """
-#         Args:
-#             view1: (torch.Tensor - N x D)
-#             view2: (torch.Tensor - N x D)
-#             temperature: float
-#             b_cos (bool)
-
-#         Return: Average InfoNCE Loss
-#         """
-#         if b_cos:
-#             view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
-
-#         pos_score = (view1 @ view2.T) / temperature
-#         score = torch.diag(F.log_softmax(pos_score, dim=1))
-#         return -score.mean()
-    def InfoNCE(self, u_e, pos_e, neg_e, temperature: float):
+    def InfoNCE(self, view1, view2, temperature: float, b_cos: bool = True):
         """
-        Compute the InfoNCE loss using anchor, positive, and negative embeddings.
-
         Args:
-            u_e (torch.Tensor): Anchor embeddings, size [N, D]
-            pos_e (torch.Tensor): Positive embeddings corresponding to the anchors, size [N, D]
-            neg_e (torch.Tensor): Negative embeddings, size [N, M, D] where M is the number of negatives
-            temperature (float): Temperature scaling factor for controlling the sharpness of the distribution
+            view1: (torch.Tensor - N x D)
+            view2: (torch.Tensor - N x D)
+            temperature: float
+            b_cos (bool)
 
-        Returns:
-            torch.Tensor: The average InfoNCE loss
+        Return: Average InfoNCE Loss
         """
-        # Normalize embeddings to ensure cosine similarity computation
-        u_e = F.normalize(u_e, dim=1)
-        pos_e = F.normalize(pos_e, dim=1)
-        neg_e = F.normalize(neg_e, dim=-1)
+        if b_cos:
+            view1, view2 = F.normalize(view1, dim=1), F.normalize(view2, dim=1)
 
-        # Compute similarity scores
-        pos_scores = torch.sum(u_e * pos_e, dim=1, keepdim=True) / temperature
-        neg_scores = torch.einsum('nd,nmd->nm', u_e, neg_e) / temperature
-
-        # Concatenate the scores for positive and negative pairs
-        scores = torch.cat([pos_scores, neg_scores], dim=1)
-
-        # Compute log_softmax over the scores to get the log-probabilities
-        log_probs = F.log_softmax(scores, dim=1)
-
-        # Compute the negative log likelihood for the positive class (index 0)
-        loss = -log_probs[:, 0].mean()
-
-        return loss
+        pos_score = (view1 @ view2.T) / temperature
+        score = torch.diag(F.log_softmax(pos_score, dim=1))
+        return -score.mean()
+    
     
     def InfoNCE_with_negatives(self, pos, pos_aug, neg, neg_aug, temperature: float, b_cos: bool = True):
         """
@@ -228,10 +199,10 @@ class MF(nn.Module):
 
         return loss
     
-    def cal_cl_loss(self,user_view1,user_view2,pos_view1,pos_view2,neg_view1, neg_view2,temperature_u, temperature_i):
+    def cal_cl_loss(self,user_view1,user_view2,pos_view1,pos_view2,temperature_u, temperature_i):
         
         user_cl_loss = self.InfoNCE(user_view1, user_view2, temperature_u.unsqueeze(1))
-        item_cl_loss = self.InfoNCE_with_negatives(pos_view1,pos_view2,neg_view1, neg_view2, temperature_i.unsqueeze(1))
+        item_cl_loss = self.InfoNCE(pos_view1,pos_view2, temperature_i.unsqueeze(1))
         
         return (user_cl_loss + item_cl_loss)
     
@@ -249,7 +220,7 @@ class MF(nn.Module):
             tau_item = self._loss_to_tau(loss_per_ins, w_0)
             self._update_tau_memory(tau_user, tau_item)
          
-        return self.Uniform_loss(self.user_embed[user], self.item_embed[pos_item], self.item_embed[neg_item], cl_user_emb[user], cl_item_emb[pos_item],cl_item_emb[neg_item], user, w_0)
+        return self.Uniform_loss(self.user_embed[user], self.item_embed[pos_item], self.item_embed[neg_item], user, w_0)
 
     def gcn_emb(self):
         user_gcn_emb, item_gcn_emb = self.user_embed, self.item_embed
@@ -273,23 +244,27 @@ class MF(nn.Module):
         return torch.matmul(u_g_embeddings, i_g_embeddings.t())
 
     # 对比训练loss，仅仅计算角度
-    def Uniform_loss(self, user_gcn_emb, pos_gcn_emb, neg_gcn_emb, cl_user_emb, cl_pos_emb, cl_neg_emb,user, w_0=None):
+    def Uniform_loss(self, user_gcn_emb, pos_gcn_emb, neg_gcn_emb,user, w_0=None):
         batch_size = user_gcn_emb.shape[0]
         u_e = user_gcn_emb  # [B, F]
         if self.mess_dropout:
             u_e = self.dropout(u_e)
         pos_e = pos_gcn_emb # [B, F]
         neg_e = neg_gcn_emb # [B, M, F]
+        user_view1 = self.add_noise(u_e)
+        user_view2 = self.add_noise(u_e)
+        pos_view1 = self.add_noise(pos_e)
+        pos_view2 = self.add_noise(pos_e)
 
         item_e = torch.cat([pos_e.unsqueeze(1), neg_e], dim=1) # [B, M+1, F]
         if self.u_norm:
             u_e = F.normalize(u_e, dim=-1)
-            
-            
+            user_view1 = F.normalize(user_view1, dim=-1)
+            user_view2 = F.normalize(user_view2, dim=-1)
         if self.i_norm:
             item_e = F.normalize(item_e, dim=-1)
-            
-            
+            pos_view1 = F.normalize(pos_view1, dim=-1)
+            pos_view2 = F.normalize(pos_view2, dim=-1)
 
         y_pred = torch.bmm(item_e, u_e.unsqueeze(-1)).squeeze(-1) # [B M+1]
         # cul regularizer
@@ -303,7 +278,7 @@ class MF(nn.Module):
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)
-            cl_loss = self.InfoNCE(u_e, pos_e, neg_e, tau.unsqueeze(1))
+            cl_loss = self.cal_cl_loss(user_view1, user_view2, pos_view1, pos_view2, tau, tau_i)
             return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
         elif self.loss_name == "SSM_Loss":
             loss, loss_ = self.loss_fn(y_pred)

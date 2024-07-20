@@ -150,9 +150,10 @@ class GraphConv(nn.Module):
             if mess_dropout:
                 agg_embed = self.dropout(agg_embed)
             # agg_embed = F.normalize(agg_embed)
-            if perturbed:
-                random_noise = torch.rand_like(agg_embed).cuda()
-                agg_embed += torch.sign(agg_embed) * F.normalize(random_noise, dim=-1) * eps
+            else:
+                if perturbed:
+                    random_noise = torch.rand_like(agg_embed).cuda()
+                    agg_embed += torch.sign(agg_embed) * F.normalize(random_noise, dim=-1) * eps
             embs.append(agg_embed)
             if hop==0:
                 all_embeddings_cl = agg_embed
@@ -286,34 +287,12 @@ class lgn_frame(nn.Module):
             if x is None:
                 tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
             else:
-                base_laberw = torch.mean(x)
-                # Assuming user_embed and item_embed are your user and item embeddings
-#                 user_norms = torch.norm(self.user_embed, p=2, dim=1)
-#                 item_norms = torch.norm(self.item_embed, p=2, dim=1)
+                # base_laberw = torch.mean(x)
+                # laberw_data = torch.clamp((x - base_laberw) / self.temperature_2,
+                #                         min=-np.e ** (-1), max=1000)
+                # laberw_data = self.lambertw_table[((laberw_data + 1) * 1e4).long()]
+                # tau = (t_0 * torch.exp(-laberw_data)).detach()
 
-#                 # Combine user and item norms into a single tensor
-#                 embedding_norms = torch.cat([user_norms, item_norms])
-#                 # Calculating rate of change in variance of embeddings
-#                 current_variance_norms = torch.var(embedding_norms)
-#                 if hasattr(self, 'previous_variance_norms'):
-#                     variance_change_rate = (current_variance_norms - self.previous_variance_norms) / self.previous_variance_norms
-#                 else:
-#                     variance_change_rate = 0  # Default to no change on the first run
-#                 self.previous_variance_norms = current_variance_norms
-
-#                 # Dynamically adjust kappa based on the variance change rate
-#                 dynamic_kappa = self.base_kappa * (1 + variance_change_rate)  # base_kappa is a predefined base sensitivity
-
-#                 # Mod factor calculation with dynamically adjusted kappa
-#                 mod_factor = dynamic_kappa * current_variance_norms
-
-#                 # Continue with tau calculation as before
-#                 laberw_input = torch.clamp((x - base_laberw + mod_factor) / self.temperature_2,
-#                                            min=-np.e ** (-1), max=1000)
-#                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
-#                 tau = (t_0 * torch.exp(-laberw_data)).detach()
-
-                # Calculate norms
                 user_norms = torch.norm(self.user_embed, p=2, dim=1)
                 item_norms = torch.norm(self.item_embed, p=2, dim=1)
                 embedding_norms = torch.cat([user_norms, item_norms])
@@ -333,25 +312,7 @@ class lgn_frame(nn.Module):
                 laberw_input = torch.clamp((x  - base_laberw + mad_factor + var) / self.temperature_2,
                                            min=-np.e ** (-1), max=1000)
                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
-                tau = (t_0 * torch.exp(-laberw_data)).detach()
-                
-
-#                 user_norms = torch.norm(self.user_embed, p=2, dim=1)
-#                 item_norms = torch.norm(self.item_embed, p=2, dim=1)
-
-#                 # Combine user and item norms into a single tensor
-#                 embedding_norms = torch.cat([user_norms, item_norms])
-#                 base_laberw = torch.mean(x)
-#                 variance_norms = torch.var(embedding_norms)  # Assuming embedding_norms are precomputed
-
-#                 kappa = 0.1  # Sensitivity to variance changes
-#                 mod_factor = kappa * variance_norms
-
-#                 laberw_input = torch.clamp((x - base_laberw + mod_factor) / self.temperature_2,
-#                                            min=-np.e ** (-1), max=1000)
-#                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
-#                 tau = (t_0 * torch.exp(-laberw_data)).detach()
-                
+                tau = (t_0 * torch.exp(-laberw_data)).detach()                             
         return tau
         
 
@@ -505,7 +466,7 @@ class lgn_frame(nn.Module):
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)
-            cl_loss = 0.2 * self.cal_cl_loss(u_e, u_e_cl, pos_e, item_e_cl, tau, tau_i)
+            cl_loss = 0.25 * self.cal_cl_loss(u_e, u_e_cl, pos_e, item_e_cl, tau, tau_i)
             
             return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
         elif self.loss_name == "SSM_Loss":
