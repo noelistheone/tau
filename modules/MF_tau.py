@@ -22,6 +22,11 @@ class MF(nn.Module):
         self.n_users = data_config['n_users']
         self.n_items = data_config['n_items']
         self.adj_mat = adj_mat
+        
+        self.func = args_config.func
+        self.func_origin = args_config.func_origin
+        self.cl_rate = args_config.cl_rate
+        self.cf_rate = args_config.cf_rate
 
         self.decay = args_config.l2
         self.emb_size = args_config.dim
@@ -40,6 +45,8 @@ class MF(nn.Module):
         self.temperature_2 = args_config.temperature_2
 
         self.device = torch.device("cuda:0") if args_config.cuda else torch.device("cpu")
+        
+        self.predictor = nn.Linear(self.emb_size, self.emb_size)
      
         # param for norm
         self.u_norm = args_config.u_norm
@@ -101,10 +108,27 @@ class MF(nn.Module):
             if x is None:
                 tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
             else:
+                # Calculate norms
+                user_norms = torch.norm(self.user_embed, p=2, dim=1)
+                item_norms = torch.norm(self.item_embed, p=2, dim=1)
+                embedding_norms = torch.cat([user_norms, item_norms])
+
+                # Calculate Median Absolute Deviation (MAD)
+                median = torch.median(embedding_norms)
+                mad = torch.median(torch.abs(embedding_norms - median))
+                variance_norms = torch.var(embedding_norms)
+
+                #kappa = 1.0  # Sensitivity to MAD changes
+                mad_factor = 0.1 * mad
+                
+                var = 1.0 * variance_norms
+
                 base_laberw = torch.quantile(x, self.temperature)
-                laberw_data = torch.clamp((x - base_laberw) / self.temperature_2,
-                                        min=-np.e ** (-1), max=1000)
-                laberw_data = self.lambertw_table[((laberw_data + 1) * 1e4).long()]
+                #base_laberw = torch.mean(x)
+                
+                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func_origin) / self.temperature_2,
+                                           min=-np.e ** (-1), max=1000)
+                laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
                 tau = (t_0 * torch.exp(-laberw_data)).detach()
         elif self.tau_mode == "weight_mean":
             t_0 = x_all
@@ -126,10 +150,10 @@ class MF(nn.Module):
                 
                 var = 1.0 * variance_norms
 
-                base_laberw = torch.quantile(x, self.temperature)
-                #base_laberw = torch.mean(x)
+                #base_laberw = torch.quantile(x, self.temperature)
+                base_laberw = torch.mean(x)
                 
-                laberw_input = torch.clamp((x  - base_laberw + mad_factor + var) / self.temperature_2,
+                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func_origin) / self.temperature_2,
                                            min=-np.e ** (-1), max=1000)
                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
                 tau = (t_0 * torch.exp(-laberw_data)).detach()
@@ -242,6 +266,9 @@ class MF(nn.Module):
 
     def rating(self, u_g_embeddings=None, i_g_embeddings=None):
         return torch.matmul(u_g_embeddings, i_g_embeddings.t())
+    
+    def loss_cf(self, p, z):  # negative cosine similarity
+        return - F.cosine_similarity(p, z.detach(), dim=-1).mean()
 
     # 对比训练loss，仅仅计算角度
     def Uniform_loss(self, user_gcn_emb, pos_gcn_emb, neg_gcn_emb,user, w_0=None):
@@ -249,22 +276,29 @@ class MF(nn.Module):
         u_e = user_gcn_emb  # [B, F]
         if self.mess_dropout:
             u_e = self.dropout(u_e)
+            pos_e_cl = self.dropout(pos_gcn_emb)
+        else:
+            u_e = self.add_noise(u_e)
+            pos_e_cl = self.add_noise(pos_gcn_emb)
         pos_e = pos_gcn_emb # [B, F]
         neg_e = neg_gcn_emb # [B, M, F]
-        user_view1 = self.add_noise(u_e)
-        user_view2 = self.add_noise(u_e)
-        pos_view1 = self.add_noise(pos_e)
-        pos_view2 = self.add_noise(pos_e)
+        
+        with torch.no_grad():
+            u_target, i_target = u_e.clone(), pos_e.clone()
+            u_target.detach()
+            i_target.detach()
+            u_target, i_target = F.dropout(u_target, 0.5), F.dropout(i_target, 0.5)
+        
 
         item_e = torch.cat([pos_e.unsqueeze(1), neg_e], dim=1) # [B, M+1, F]
         if self.u_norm:
             u_e = F.normalize(u_e, dim=-1)
-            user_view1 = F.normalize(user_view1, dim=-1)
-            user_view2 = F.normalize(user_view2, dim=-1)
+            user_view1 = F.normalize(user_gcn_emb, dim=-1)
+            
         if self.i_norm:
             item_e = F.normalize(item_e, dim=-1)
-            pos_view1 = F.normalize(pos_view1, dim=-1)
-            pos_view2 = F.normalize(pos_view2, dim=-1)
+            pos_view1 = F.normalize(pos_e, dim=-1)
+            pos_view2 = F.normalize(pos_e_cl, dim=-1)
 
         y_pred = torch.bmm(item_e, u_e.unsqueeze(-1)).squeeze(-1) # [B M+1]
         # cul regularizer
@@ -277,9 +311,13 @@ class MF(nn.Module):
             mask_zeros = None
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
+            u_online, i_online = self.predictor(u_e), self.predictor(pos_e)
+            loss_ui = self.loss_cf(u_online, i_target)/2
+            loss_iu = self.loss_cf(i_online, u_target)/2
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)
-            cl_loss = self.cal_cl_loss(user_view1, user_view2, pos_view1, pos_view2, tau, tau_i)
-            return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
+            cf_loss = self.cf_rate * (loss_ui + loss_iu)
+            cl_loss = self.cl_rate * self.cal_cl_loss(user_view1, u_e, pos_view1, pos_view2, tau, tau_i)
+            return loss.mean() + emb_loss + cl_loss + cf_loss, loss_, emb_loss, tau
         elif self.loss_name == "SSM_Loss":
             loss, loss_ = self.loss_fn(y_pred)
             return loss.mean() + emb_loss, loss_, emb_loss, y_pred

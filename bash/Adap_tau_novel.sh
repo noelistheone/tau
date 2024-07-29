@@ -20,6 +20,11 @@ cnt="${12}"
 generate_mode="${13}"
 gnn="${14}"
 tau_mode="${15}"
+
+func="${16}"
+func_origin="${17}"
+cl_rate="${18}"
+cf_rate="${19}"
 cd ..
 
 if [[ $gnn = "mf" ]]
@@ -44,6 +49,7 @@ then
                 --loss_fn $loss_fn --sampling_method $sampling_method \
                 --generate_mode $generate_mode --u_norm --i_norm --tau_mode $tau_mode\
                 --temperature $t_1 --temperature_2 $t_2 --cnt_lr $cnt --context_hops $context_hops\
+                --func $func --func_origin $func_origin --cl_rate $cl_rate --cf_rate $cf_rate\
                 > ./outputs/${name1}.log
 else
         echo "start to drop embedding"
@@ -55,6 +61,7 @@ else
                 --loss_fn $loss_fn --sampling_method $sampling_method \
                 --generate_mode $generate_mode --u_norm --i_norm --tau_mode $tau_mode \
                 --temperature $t_1 --temperature_2 $t_2 --cnt_lr $cnt --context_hops $context_hops\
+                --func $func --func_origin $func_origin --cl_rate $cl_rate --cf_rate $cf_rate\
                 > ./outputs/${name1}.log
 fi
 

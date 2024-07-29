@@ -47,5 +47,9 @@ def parse_args():
     parser.add_argument('--generate_mode', type=str, default="normal", help="generate_mode")
     parser.add_argument('--tau_mode', type=str, default="static", help='method for calculate tau')
     parser.add_argument('--cnt_lr', type=int, default=10, help='epochs for warm-up')
+    parser.add_argument('--func', type=float, default=0.5, help='rate of mad')
+    parser.add_argument('--func_origin', type=float, default=0.5, help='rate of mad origin')
+    parser.add_argument('--cl_rate', type=float, default=0.25, help='cl rate')
+    parser.add_argument('--cf_rate', type=float, default=1.0, help='cf rate')
     
     return parser.parse_args()
