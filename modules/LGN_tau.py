@@ -17,84 +17,6 @@ from scipy.special import lambertw
 
 
 
-class CustomInfoNCELoss(nn.Module):
-    def __init__(self):
-        super(CustomInfoNCELoss, self).__init__()
-
-    def forward(self, user_embed, positive_embed, temperature, w_0):
-        batch_size = user_embed.size(0)
-        device = user_embed.device
-
-        # Add Gaussian noise to embeddings
-        noise = torch.normal(mean=0, std=0.1, size=user_embed.size()).to(device)
-        noisy_user_embed = user_embed + noise
-
-        # Construct y_pred framework
-        row_swap = torch.cat([torch.arange(batch_size).long(), torch.arange(batch_size).long()]).to(device)
-        col_before = torch.cat([torch.arange(batch_size).long(), torch.zeros(batch_size).long()]).to(device)
-        col_after = torch.cat([torch.zeros(batch_size).long(), torch.arange(batch_size).long()]).to(device)
-
-        # Compute similarity matrix for both user_embed and noisy_user_embed
-        y_pred_clean = torch.mm(user_embed, positive_embed.t().contiguous())
-        y_pred_noisy = torch.mm(noisy_user_embed, positive_embed.t().contiguous())
-
-        # Swap rows and columns as needed
-        y_pred_clean[row_swap, col_before] = y_pred_clean[row_swap, col_after]
-        y_pred_noisy[row_swap, col_before] = y_pred_noisy[row_swap, col_after]
-
-        # Positive and Negative Logits for clean embeddings
-        pos_logits_clean = torch.exp(y_pred_clean[:, 0] / w_0)  # B
-        neg_logits_clean = torch.exp(y_pred_clean[:, 1:] / temperature.unsqueeze(1))  # B M
-
-        # Positive and Negative Logits for noisy embeddings
-        pos_logits_noisy = torch.exp(y_pred_noisy[:, 0] / w_0)  # B
-        neg_logits_noisy = torch.exp(y_pred_noisy[:, 1:] / temperature.unsqueeze(1))  # B M
-
-        # Compute L_q and L_g for both clean and noisy embeddings
-        L_q_clean = -torch.log(pos_logits_clean / torch.exp(y_pred_clean).sum(dim=1))
-        L_g_noisy = -torch.log(pos_logits_noisy / torch.exp(y_pred_noisy).sum(dim=1))
-
-        # Final loss
-        loss = (L_q_clean.mean() + L_g_noisy.mean()) / 2
-
-        # Compute the loss without temperature scaling for logging
-        pos_logits_clean_ = torch.exp(y_pred_clean[:, 0])  # B
-        neg_logits_clean_ = torch.exp(y_pred_clean[:, 1:])  # B M
-        Ng_clean_ = neg_logits_clean_.sum(dim=-1)
-        loss_clean_ = (-torch.log(pos_logits_clean_ / Ng_clean_)).mean().detach()
-
-        pos_logits_noisy_ = torch.exp(y_pred_noisy[:, 0])  # B
-        neg_logits_noisy_ = torch.exp(y_pred_noisy[:, 1:])  # B M
-        Ng_noisy_ = neg_logits_noisy_.sum(dim=-1)
-        loss_noisy_ = (-torch.log(pos_logits_noisy_ / Ng_noisy_)).mean().detach()
-
-        return loss, (loss_clean_ + loss_noisy_) / 2
-    
-class NegNCELoss(nn.Module):
-    def __init__(self, temperature=0.07):
-        super(NegNCELoss, self).__init__()
-        self.temperature = temperature
-
-    def forward(self, user_embed, positive_embed):
-        # Normalize embeddings
-        user_embed = F.normalize(user_embed, dim=1)
-        positive_embed = F.normalize(positive_embed, dim=1)
-        
-        # Compute cosine similarity
-        similarity_matrix = torch.matmul(user_embed, positive_embed.T) / self.temperature
-        
-        # Diagonal elements are positive pairs
-        pos_pairs = torch.diag(similarity_matrix)
-        
-        # Compute L_q
-        l_q = -torch.log(torch.exp(pos_pairs) / torch.exp(similarity_matrix).sum(dim=1))
-        
-        # Compute L_g
-        l_g = -torch.log(torch.exp(pos_pairs) / torch.exp(similarity_matrix).sum(dim=0))
-        
-        # Final loss
-        loss = (l_q.mean() + l_g.mean()) / 2
-        return loss
 
 class GraphConv(nn.Module):
     """
@@ -191,7 +113,7 @@ class lgn_frame(nn.Module):
         self.temperature = args_config.temperature
         self.temperature_2 = args_config.temperature_2
         
-        # self.predictor = nn.Linear(self.emb_size, self.emb_size)
+        
         
         self.prev_loss = None
         self.prev_std = None
@@ -222,8 +144,7 @@ class lgn_frame(nn.Module):
         self.base_kappa = nn.Parameter(torch.tensor(0.1))  # Example starting sensitivity value
        
         self.loss_name = args_config.loss_fn
-        # self.negnce_loss = NegNCELoss()
-        # self.InfoNCE = CustomInfoNCELoss()
+        
         self.generate_mode = args_config.generate_mode
 
         if args_config.loss_fn == "Adap_tau_Loss":
@@ -266,13 +187,7 @@ class lgn_frame(nn.Module):
         v = torch.from_numpy(coo.data).float()
         return torch.sparse.FloatTensor(i, v, coo.shape)
     
-    def sparse_dropout(self, x, rate=0.1):
-        kprob = 1 - rate
-        randx = torch.rand(x._values().size()).to(self.device)
-        mask = ((randx + kprob).floor()).type(torch.bool)
-        rc = x._indices()[:, mask]
-        val = x._values()[mask] * (1.0 / kprob)
-        return torch.sparse.FloatTensor(rc, val, x.shape).to(self.device)
+    
 
     def _update_tau_memory(self, x, x_i):
         # x: std [B]
@@ -296,7 +211,8 @@ class lgn_frame(nn.Module):
             if x is None:
                 tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
             else:
-                base_laberw = torch.quantile(x, self.temperature)
+                # base_laberw = torch.quantile(x, self.temperature)
+                base_laberw = torch.mean(x)
                 laberw_data = torch.clamp((x - base_laberw) / self.temperature_2,
                                         min=-np.e ** (-1), max=1000)
                 laberw_data = self.lambertw_table[((laberw_data + 1) * 1e4).long()]
@@ -403,16 +319,7 @@ class lgn_frame(nn.Module):
         user_gcn_emb, item_gcn_emb = self.pooling(user_gcn_emb), self.pooling(item_gcn_emb)
         return user_gcn_emb.detach(), item_gcn_emb.detach()
     
-    def gcn_emb_noise(self):
-        user_gcn_emb, item_gcn_emb, user_cl_emb, item_cl_emb = self.gcn(self.user_embed,
-                                              self.item_embed,
-                                              edge_dropout=False,
-                                              mess_dropout=False,
-                                              perturbed=True)
-        
-        # user_gcn_emb, item_gcn_emb, user_cl_emb, item_cl_emb = self.pooling(user_gcn_emb), self.pooling(item_gcn_emb), self.pooling(user_cl_emb), self.pooling(item_cl_emb)
-        user_gcn_emb, item_gcn_emb = self.pooling(user_gcn_emb), self.pooling(item_gcn_emb)
-        return user_gcn_emb.detach(), item_gcn_emb.detach()
+    
     def generate(self, mode='test', split=True):
         user_gcn_emb, item_gcn_emb = self.gcn(self.user_embed,
                                               self.item_embed,
@@ -499,23 +406,6 @@ class lgn_frame(nn.Module):
         batch_size = user_gcn_emb.shape[0]
         u_e = self.pooling(user_gcn_emb)  # [B, F]
         pos_e = self.pooling(pos_gcn_emb) # [B, F]
-        
-#         u_online, i_online = self.gcn_emb()
-#         with torch.no_grad():
-#             u_target, i_target = u_online.clone(), i_online.clone()
-            
-#             x = self.sparse_dropout(self.sparse_norm_adj)
-#             all_embeddings = torch.cat([u_target, i_target], 0)
-#             all_embeddings = torch.sparse.mm(x, all_embeddings)
-#             u_target = all_embeddings[:self.n_users, :]
-#             i_target = all_embeddings[self.n_users:, :]
-#             u_target = u_target[user, :]
-#             i_target = i_target[pos_item, :]
-#         u_online = u_online[user, :]
-#         i_online = i_online[pos_item, :]
-
-        
-           
 
         if self.u_norm:
             u_e = F.normalize(u_e, dim=-1)
@@ -541,13 +431,11 @@ class lgn_frame(nn.Module):
             mask_zeros = None
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
-            # u_online, i_online = self.predictor(u_online), self.predictor(i_online)
-            # loss_ui = self.loss_cf(u_online, i_target)/2
-            # loss_iu = self.loss_cf(i_online, u_target)/2
+
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)    
             cl_loss = self.cl_rate * self.cal_cl_loss(u_e, u_e_cl, pos_e, item_e_cl, tau, tau_i)
             return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
-            #return loss.mean() + emb_loss + cl_loss + (loss_ui + loss_iu) * self.cf_rate, loss_, emb_loss, tau
+            
         elif self.loss_name == "SSM_Loss":
             loss, loss_ = self.loss_fn(y_pred)
             return loss.mean() + emb_loss, loss_, emb_loss, y_pred
