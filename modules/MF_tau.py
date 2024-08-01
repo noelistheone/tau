@@ -46,7 +46,7 @@ class MF(nn.Module):
 
         self.device = torch.device("cuda:0") if args_config.cuda else torch.device("cpu")
         
-        self.predictor = nn.Linear(self.emb_size, self.emb_size)
+        
      
         # param for norm
         self.u_norm = args_config.u_norm
@@ -85,7 +85,7 @@ class MF(nn.Module):
             x = x.detach()
             x_i = x_i.detach()
             self.memory_tau = x
-            self.memory_tai_i = x_i
+            self.memory_tau_i = x_i
 
     # def _loss_to_tau(self, x, x_all):
     #     t_0 = x_all
@@ -99,7 +99,7 @@ class MF(nn.Module):
     #         tau = (t_0 * torch.exp(-laberw_data)).detach()
     #     return tau
 
-    def _loss_to_tau(self, x, x_all):
+    def _loss_to_tau(self, x, x_all, user, pos_item):
         if self.tau_mode == "weight_v0":
             t_0 = x_all
             tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
@@ -109,8 +109,13 @@ class MF(nn.Module):
                 tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
             else:
                 # Calculate norms
-                user_norms = torch.norm(self.user_embed, p=2, dim=1)
-                item_norms = torch.norm(self.item_embed, p=2, dim=1)
+                u_e = self.user_embed[user]
+                pos_e = self.item_embed[pos_item]
+                if self.mess_dropout:
+                    u_e = self.dropout(u_e)
+                # Calculate norms
+                user_norms = torch.norm(u_e, p=2, dim=1)
+                item_norms = torch.norm(pos_e, p=2, dim=1)
                 embedding_norms = torch.cat([user_norms, item_norms])
 
                 # Calculate Median Absolute Deviation (MAD)
@@ -119,14 +124,29 @@ class MF(nn.Module):
                 variance_norms = torch.var(embedding_norms)
 
                 #kappa = 1.0  # Sensitivity to MAD changes
-                mad_factor = 0.1 * mad
+                mad_factor = 0.5 * mad
                 
-                var = 1.0 * variance_norms
+                var = 2.0 * variance_norms
+                
+                
+                user_norms_origin = torch.norm(self.user_embed, p=2, dim=1)
+                item_norms_origin = torch.norm(self.item_embed, p=2, dim=1)
+                embedding_norms_origin = torch.cat([user_norms_origin, item_norms_origin])
+
+                # Calculate Median Absolute Deviation (MAD)
+                median_origin = torch.median(embedding_norms_origin)
+                mad_origin = torch.median(torch.abs(embedding_norms_origin - median_origin))
+                variance_norms_origin = torch.var(embedding_norms_origin)
+
+                #kappa = 1.0  # Sensitivity to MAD changes
+                mad_factor_origin = 0.1 * mad_origin
+                
+                var_origin = 1.0 * variance_norms_origin
 
                 base_laberw = torch.quantile(x, self.temperature)
                 #base_laberw = torch.mean(x)
                 
-                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func_origin) / self.temperature_2,
+                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func + (mad_factor_origin + var_origin) * self.func_origin) / self.temperature_2,
                                            min=-np.e ** (-1), max=1000)
                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
                 tau = (t_0 * torch.exp(-laberw_data)).detach()
@@ -136,8 +156,13 @@ class MF(nn.Module):
                 tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
             else:
                 # Calculate norms
-                user_norms = torch.norm(self.user_embed, p=2, dim=1)
-                item_norms = torch.norm(self.item_embed, p=2, dim=1)
+                u_e = self.user_embed[user]
+                pos_e = self.item_embed[pos_item]
+                if self.mess_dropout:
+                    u_e = self.dropout(u_e)
+                # Calculate norms
+                user_norms = torch.norm(u_e, p=2, dim=1)
+                item_norms = torch.norm(pos_e, p=2, dim=1)
                 embedding_norms = torch.cat([user_norms, item_norms])
 
                 # Calculate Median Absolute Deviation (MAD)
@@ -146,14 +171,29 @@ class MF(nn.Module):
                 variance_norms = torch.var(embedding_norms)
 
                 #kappa = 1.0  # Sensitivity to MAD changes
-                mad_factor = 0.1 * mad
+                mad_factor = 0.5 * mad
                 
-                var = 1.0 * variance_norms
+                var = 2.0 * variance_norms
+                
+                
+                user_norms_origin = torch.norm(self.user_embed, p=2, dim=1)
+                item_norms_origin = torch.norm(self.item_embed, p=2, dim=1)
+                embedding_norms_origin = torch.cat([user_norms_origin, item_norms_origin])
 
-                #base_laberw = torch.quantile(x, self.temperature)
-                base_laberw = torch.mean(x)
+                # Calculate Median Absolute Deviation (MAD)
+                median_origin = torch.median(embedding_norms_origin)
+                mad_origin = torch.median(torch.abs(embedding_norms_origin - median_origin))
+                variance_norms_origin = torch.var(embedding_norms_origin)
+
+                #kappa = 1.0  # Sensitivity to MAD changes
+                mad_factor_origin = 0.1 * mad_origin
                 
-                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func_origin) / self.temperature_2,
+                var_origin = 1.0 * variance_norms_origin
+
+                base_laberw = torch.mean(x)
+                #base_laberw = torch.mean(x)
+                
+                laberw_input = torch.clamp((x  - base_laberw + (mad_factor + var) * self.func + (mad_factor_origin + var_origin) * self.func_origin) / self.temperature_2,
                                            min=-np.e ** (-1), max=1000)
                 laberw_data = self.lambertw_table[((laberw_input + 1) * 1e4).long()]
                 tau = (t_0 * torch.exp(-laberw_data)).detach()
@@ -235,13 +275,13 @@ class MF(nn.Module):
         pos_item = batch['pos_items']
         neg_item = batch['neg_items']
         
-        cl_user_emb = self.add_noise(self.user_embed)
-        cl_item_emb = self.add_noise(self.item_embed)
+        cl_user_emb = self.add_noise(self.user_embed, 0.05)
+        cl_item_emb = self.add_noise(self.item_embed, 0.05)
         
 
         if s == 0 and w_0 is not None:
-            tau_user = self._loss_to_tau(loss_per_user, w_0)
-            tau_item = self._loss_to_tau(loss_per_ins, w_0)
+            tau_user = self._loss_to_tau(loss_per_user, w_0, user, pos_item)
+            tau_item = self._loss_to_tau(loss_per_ins, w_0, user, pos_item)
             self._update_tau_memory(tau_user, tau_item)
          
         return self.Uniform_loss(self.user_embed[user], self.item_embed[pos_item], self.item_embed[neg_item], user, w_0)
@@ -276,24 +316,21 @@ class MF(nn.Module):
         u_e = user_gcn_emb  # [B, F]
         if self.mess_dropout:
             u_e = self.dropout(u_e)
+            u_e_cl = self.dropout(u_e)
             pos_e_cl = self.dropout(pos_gcn_emb)
         else:
-            u_e = self.add_noise(u_e)
+            u_e_cl = self.add_noise(u_e)
             pos_e_cl = self.add_noise(pos_gcn_emb)
         pos_e = pos_gcn_emb # [B, F]
         neg_e = neg_gcn_emb # [B, M, F]
         
-        with torch.no_grad():
-            u_target, i_target = u_e.clone(), pos_e.clone()
-            u_target.detach()
-            i_target.detach()
-            u_target, i_target = F.dropout(u_target, 0.5), F.dropout(i_target, 0.5)
+        
         
 
         item_e = torch.cat([pos_e.unsqueeze(1), neg_e], dim=1) # [B, M+1, F]
         if self.u_norm:
             u_e = F.normalize(u_e, dim=-1)
-            user_view1 = F.normalize(user_gcn_emb, dim=-1)
+            u_e_cl = F.normalize(u_e_cl, dim=-1)
             
         if self.i_norm:
             item_e = F.normalize(item_e, dim=-1)
@@ -311,13 +348,11 @@ class MF(nn.Module):
             mask_zeros = None
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
-            u_online, i_online = self.predictor(u_e), self.predictor(pos_e)
-            loss_ui = self.loss_cf(u_online, i_target)/2
-            loss_iu = self.loss_cf(i_online, u_target)/2
+            
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)
-            cf_loss = self.cf_rate * (loss_ui + loss_iu)
-            cl_loss = self.cl_rate * self.cal_cl_loss(user_view1, u_e, pos_view1, pos_view2, tau, tau_i)
-            return loss.mean() + emb_loss + cl_loss + cf_loss, loss_, emb_loss, tau
+            
+            cl_loss = self.cl_rate * self.cal_cl_loss(u_e, u_e_cl, pos_view1, pos_view2, tau, tau_i)
+            return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
         elif self.loss_name == "SSM_Loss":
             loss, loss_ = self.loss_fn(y_pred)
             return loss.mean() + emb_loss, loss_, emb_loss, y_pred

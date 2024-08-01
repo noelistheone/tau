@@ -160,6 +160,7 @@ class lgn_frame(nn.Module):
         
         self.register_buffer("memory_tau", torch.full((self.n_users,), 1 / 0.10))
         self.register_buffer("memory_tau_i", torch.full((self.n_users,), 1 / 0.10))
+        self.register_buffer("memory_tau_u", torch.full((self.n_users,), 1 / 0.10))
         self.gcn = self._init_model()
         self.sampling_method = args_config.sampling_method
         
@@ -189,18 +190,46 @@ class lgn_frame(nn.Module):
     
     
 
-    def _update_tau_memory(self, x, x_i):
+    def _update_tau_memory(self, x, u_cl, i_cl):
         # x: std [B]
         # y: update position [B]
         with torch.no_grad():
             x = x.detach()
-            x_i = x_i.detach()
+            u_cl = u_cl.detach()
+            i_cl = i_cl.detach()
             self.memory_tau = x
-            self.memory_tai_i = x_i
+            self.memory_tau_i = i_cl
+            self.memory_tau_u = u_cl
 
     def get_decay_factor(self, epoch):
         return 1 / (1 + epoch * 0.01)  # Example decay function; adjust as needed
-        
+    
+    def _loss_to_tau_cl(self, x, x_all):
+        if self.tau_mode == "weight_v0":
+            t_0 = x_all
+            tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
+        elif self.tau_mode == "weight_ratio":
+            t_0 = x_all
+            if x is None:
+                tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
+            else:
+                # base_laberw = torch.quantile(x, self.temperature)
+                base_laberw = torch.mean(x)
+                laberw_data = torch.clamp((x - base_laberw) / self.temperature_2,
+                                        min=-np.e ** (-1), max=1000)
+                laberw_data = self.lambertw_table[((laberw_data + 1) * 1e4).long()]
+                tau = (t_0 * torch.exp(-laberw_data)).detach()
+        elif self.tau_mode == "weight_mean":
+            t_0 = x_all
+            if x is None:
+                tau = t_0 * torch.ones_like(self.memory_tau, device=self.device)
+            else:
+                base_laberw = torch.mean(x)
+                laberw_data = torch.clamp((x - base_laberw) / self.temperature_2,
+                                        min=-np.e ** (-1), max=1000)
+                laberw_data = self.lambertw_table[((laberw_data + 1) * 1e4).long()]
+                tau = (t_0 * torch.exp(-laberw_data)).detach()                
+        return tau
             
     def _loss_to_tau(self, x, x_all, current_epoch, total_epochs, u_e, pos_e):
         if self.tau_mode == "weight_v0":
@@ -290,8 +319,10 @@ class lgn_frame(nn.Module):
         if s == 0 and w_0 is not None:
             # self.logger.info("Start to adjust tau with respect to users")
             tau_user = self._loss_to_tau(loss_per_user, w_0, epoch, self.total_epoch, user_gcn_emb[user], item_gcn_emb[pos_item])
-            tau_item = self._loss_to_tau(loss_per_ins, w_0, epoch, self.total_epoch, user_gcn_emb[user], item_gcn_emb[pos_item])
-            self._update_tau_memory(tau_user, tau_item)
+            #tau_item = self._loss_to_tau(loss_per_ins, w_0, epoch, self.total_epoch, user_gcn_emb[user], item_gcn_emb[pos_item])
+            tau_user_cl = self._loss_to_tau_cl(loss_per_user, w_0)
+            tau_item_cl = self._loss_to_tau_cl(loss_per_ins, w_0)
+            self._update_tau_memory(tau_user, tau_user_cl, tau_item_cl)
             
         if self.sampling_method == "no_sample":
             return self.NO_Sample_Uniform_loss(user_gcn_emb[user], item_gcn_emb[pos_item], cl_user_emb[user], cl_item_emb[pos_item], user, pos_item, w_0)
@@ -431,9 +462,10 @@ class lgn_frame(nn.Module):
             mask_zeros = None
             tau = torch.index_select(self.memory_tau, 0, user).detach()
             tau_i = torch.index_select(self.memory_tau_i, 0, user).detach()
+            tau_u = torch.index_select(self.memory_tau_u, 0, user).detach()
 
             loss, loss_ = self.loss_fn(y_pred, tau, w_0)    
-            cl_loss = self.cl_rate * self.cal_cl_loss(u_e, u_e_cl, pos_e, item_e_cl, tau, tau_i)
+            cl_loss = self.cl_rate * self.cal_cl_loss(u_e, u_e_cl, pos_e, item_e_cl, tau_u, tau_i)
             return loss.mean() + emb_loss + cl_loss, loss_, emb_loss, tau
             
         elif self.loss_name == "SSM_Loss":
@@ -449,4 +481,3 @@ def get_negative_mask(batch_size):
 
     # negative_mask = torch.cat((negative_mask, negative_mask), 0)
     return negative_mask
-
