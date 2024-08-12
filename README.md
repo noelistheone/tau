@@ -12,6 +12,7 @@ This is the PyTorch implementation.
 
 ## Training model:
 - mkdir log
+- mkdir output
 - cd bash
 
 #### yelp2018
