@@ -1,7 +1,7 @@
 '''
-Created on March 1st, 2023
+Created on July 1st, 2024
 
-@author: Junkang Wu (jkwu0909@gmail.com)
+@author: Li Haofeng (2152498@tongji.edu.cn)
 '''
 from tarfile import POSIX_MAGIC
 from numpy.core.fromnumeric import size
@@ -95,7 +95,7 @@ class lgn_frame(nn.Module):
         self.func = args_config.func
         self.func_origin = args_config.func_origin
         self.cl_rate = args_config.cl_rate
-        self.cf_rate = args_config.cf_rate
+        
 
         self.decay = args_config.l2
         self.emb_size = args_config.dim

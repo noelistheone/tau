@@ -50,6 +50,5 @@ def parse_args():
     parser.add_argument('--func', type=float, default=0.5, help='rate of mad')
     parser.add_argument('--func_origin', type=float, default=0.5, help='rate of mad origin')
     parser.add_argument('--cl_rate', type=float, default=0.25, help='cl rate')
-    parser.add_argument('--cf_rate', type=float, default=1.0, help='cf rate')
     
     return parser.parse_args()
